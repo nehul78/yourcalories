@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: yourcalories
+    runtime: node
+    plan: starter            # persistent disks need a paid plan
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/meta
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: DATA_DIR
+        value: /var/data
+    disk:
+      name: yourcalories-data
+      mountPath: /var/data
+      sizeGB: 1

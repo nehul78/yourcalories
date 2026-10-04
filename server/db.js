@@ -3,8 +3,13 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 
 export const DATA_DIR = process.env.DATA_DIR || path.resolve('data');
-mkdirSync(path.join(DATA_DIR, 'photos'), { recursive: true });
-mkdirSync(path.join(DATA_DIR, 'reports'), { recursive: true });
+try {
+  mkdirSync(path.join(DATA_DIR, 'photos'), { recursive: true });
+  mkdirSync(path.join(DATA_DIR, 'reports'), { recursive: true });
+} catch (err) {
+  console.error(`Cannot write to the data folder "${DATA_DIR}" (${err.code}). Check that the disk is attached at that mount path, or set DATA_DIR to a writable folder.`);
+  throw err;
+}
 
 export const db = new DatabaseSync(process.env.DB_FILE || path.join(DATA_DIR, 'app.db'));
 db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
