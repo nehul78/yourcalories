@@ -1,19 +1,17 @@
 import PDFDocument from 'pdfkit';
-import { createWriteStream } from 'node:fs';
-import path from 'node:path';
-import { DATA_DIR, all, get, run } from './db.js';
+import { all, get, run } from './db.js';
 import { PARAMS, addDays, checkinStatus, computePoints, daysBetween, localDate } from './logic.js';
 import { notify } from './push.js';
 
 const C = { ink: '#1d1d1f', mute: '#6e6e73', line: '#d2d2d7', blue: '#0071e3', green: '#30a14e', orange: '#ff9f0a', bg: '#f5f5f7' };
 const fmt = (n, d = 1) => (n == null ? '—' : Number(n).toFixed(d).replace(/\.0+$/, ''));
 
-function collect(member, trainer, start, end) {
-  const goal = get('SELECT * FROM goals WHERE member_id = ?', member.id);
-  const link = get('SELECT * FROM links WHERE member_id = ?', member.id);
-  const meas = all('SELECT * FROM measurements WHERE member_id = ? AND date BETWEEN ? AND ? ORDER BY date', member.id, start, end);
-  const meals = all('SELECT date, SUM(kcal) kcal, SUM(protein) p, SUM(carbs) c, SUM(fat) f, COUNT(*) n FROM meals WHERE member_id = ? AND date BETWEEN ? AND ? GROUP BY date', member.id, start, end);
-  const workouts = all('SELECT * FROM workouts WHERE member_id = ? AND date BETWEEN ? AND ?', member.id, start, end);
+async function collect(member, trainer, start, end) {
+  const goal = await get('SELECT * FROM goals WHERE member_id = ?', member.id);
+  const link = await get('SELECT * FROM links WHERE member_id = ?', member.id);
+  const meas = await all('SELECT * FROM measurements WHERE member_id = ? AND date BETWEEN ? AND ? ORDER BY date', member.id, start, end);
+  const meals = await all('SELECT date, SUM(kcal) kcal, SUM(protein) p, SUM(carbs) c, SUM(fat) f, COUNT(*) n FROM meals WHERE member_id = ? AND date BETWEEN ? AND ? GROUP BY date', member.id, start, end);
+  const workouts = await all('SELECT * FROM workouts WHERE member_id = ? AND date BETWEEN ? AND ?', member.id, start, end);
   const span = daysBetween(start, end) + 1;
   const avg = (k) => (meals.length ? meals.reduce((s, m) => s + m[k], 0) / meals.length : null);
   const target = goal?.calories;
@@ -61,14 +59,14 @@ function weightChart(doc, series, goal, x, y, w, h) {
   doc.text(series.at(-1).d, x + w - pad - 50, y + h - 16);
 }
 
-export function renderReport(member, trainer, start, end, file) {
-  const r = collect(member, trainer, start, end);
-  const pts = computePoints(member.id, end);
+/** Renders the report and resolves with the PDF bytes. */
+export async function renderReport(member, trainer, start, end) {
+  const r = await collect(member, trainer, start, end);
+  const pts = await computePoints(member.id, end);
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: 'A4', margin: 48, info: { Title: `Health report – ${member.name}`, Author: 'YourCalories' } });
-    const out = createWriteStream(file);
-    out.on('finish', resolve).on('error', reject);
-    doc.pipe(out);
+    const chunks = [];
+    doc.on('data', (c) => chunks.push(c)).on('end', () => resolve(Buffer.concat(chunks))).on('error', reject);
     const W = doc.page.width - 96;
 
     doc.font('Helvetica-Bold').fontSize(9).fillColor(C.blue).text('YOURCALORIES · MONTHLY HEALTH REPORT', { characterSpacing: 0.8 });
@@ -142,16 +140,16 @@ export function renderReport(member, trainer, start, end, file) {
 
 /** Generates the monthly report once all mandatory parameters for the cycle are in. */
 export async function tryGenerateReport(memberId, today) {
-  const st = checkinStatus(memberId, today);
+  const st = await checkinStatus(memberId, today);
   if (!st?.ready) return null;
-  if (get('SELECT 1 FROM reports WHERE member_id = ? AND period_end >= ?', memberId, today)) return null; // one report per day at most
-  const member = get('SELECT * FROM users WHERE id = ?', memberId);
-  const link = get('SELECT * FROM links WHERE member_id = ?', memberId);
-  const trainer = get('SELECT * FROM users WHERE id = ?', link.trainer_id);
+  if (await get('SELECT 1 FROM reports WHERE member_id = ? AND period_end >= ?', memberId, today)) return null; // one report per day at most
+  const member = await get('SELECT * FROM users WHERE id = ?', memberId);
+  const link = await get('SELECT * FROM links WHERE member_id = ?', memberId);
+  const trainer = await get('SELECT * FROM users WHERE id = ?', link.trainer_id);
   const file = `${memberId}-${today}-${Date.now()}.pdf`;
-  await renderReport(member, trainer, link.cycle_start, today, path.join(DATA_DIR, 'reports', file));
-  const info = run('INSERT INTO reports (member_id, trainer_id, period_start, period_end, file) VALUES (?,?,?,?,?)', memberId, trainer.id, link.cycle_start, today, file);
-  run('UPDATE links SET cycle_start = ? WHERE member_id = ?', today, memberId);
+  const pdf = await renderReport(member, trainer, link.cycle_start, today);
+  const info = await run('INSERT INTO reports (member_id, trainer_id, period_start, period_end, file, data) VALUES (?,?,?,?,?,?)', memberId, trainer.id, link.cycle_start, today, file, pdf);
+  await run('UPDATE links SET cycle_start = ? WHERE member_id = ?', today, memberId);
   const id = Number(info.lastInsertRowid);
   await notify(trainer.id, {
     kind: 'report', title: `Monthly report ready — ${member.name}`,

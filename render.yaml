@@ -2,16 +2,15 @@ services:
   - type: web
     name: yourcalories
     runtime: node
-    plan: starter            # persistent disks need a paid plan
+    plan: free               # no disk needed: data is kept in the online database below
     buildCommand: npm install
     startCommand: npm start
     healthCheckPath: /api/meta
     envVars:
       - key: NODE_VERSION
         value: 22
-      - key: DATA_DIR
-        value: /var/data
-    disk:
-      name: yourcalories-data
-      mountPath: /var/data
-      sizeGB: 1
+      # Free Turso database (turso.tech). Render asks for both values when you create the Blueprint.
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
