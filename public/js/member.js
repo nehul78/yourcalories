@@ -110,8 +110,12 @@ export function memberApp(root, initial, { signOut, reload }) {
   /* ---------- sheets ---------- */
   const act = async (fn, okMsg) => { try { await fn(); if (okMsg) toast(okMsg); } catch (e) { toast(e.message); } };
 
+  const SRC = { saved: ['★ Mine', 'me'], coach: ['Coach', 'coach'], community: ['Friends', ''], usda: ['USDA', ''], openfoodfacts: ['Packaged', ''], ai: ['Estimate', ''] };
+  const srcPill = (f) => (SRC[f.source] ? h` <span class="pill ${SRC[f.source][1]}">${SRC[f.source][0]}</span>` : '');
+  const foodRow = (f, i) => h`<button class="row" data-act="pick" data-i="${i}"><div class="grow"><div class="t">${f.name}${srcPill(f)}</div><div class="s">${f.serving || ''}${f.region ? ` · ${f.region}` : ''}${f.cuisine ? ` · ${f.cuisine}` : ''}</div></div><span class="v">${fmtN(f.kcal)}</span></button>`;
+
   function addFood() {
-    const st = { mode: 'search', meal: mealNow(), picked: null, mult: 1, stream: null, timer: null };
+    const st = { mode: 'search', meal: mealNow(), picked: null, mult: 1, stream: null, timer: null, results: [], shelves: null, est: null, descText: '' };
     const stopCam = () => { clearInterval(st.timer); st.stream?.getTracks().forEach((t) => t.stop()); st.stream = null; };
     const el = sheet(h`<div id="fs"></div>`, { onClose: stopCam });
     const body = $('#fs', el);
@@ -120,20 +124,38 @@ export function memberApp(root, initial, { signOut, reload }) {
       stopCam();
       if (st.picked) {
         const f = st.picked, k = st.mult, r = (n) => Math.round((n || 0) * k * 10) / 10;
-        return render(body, h`<h3>${f.name}</h3><div class="card" style="text-align:center"><div style="font-size:40px;font-weight:700">${fmtN(f.kcal * k)}<small style="font-size:16px;color:var(--mute)"> kcal</small></div><div class="s" style="color:var(--mute)">${f.serving || '1 serving'} × ${k} · P ${r(f.protein)} · C ${r(f.carbs)} · F ${r(f.fat)}</div></div>
+        return render(body, h`<h3>${f.name}</h3><div class="card" style="text-align:center"><div style="font-size:40px;font-weight:700">${fmtN(f.kcal * k)}<small style="font-size:16px;color:var(--mute)"> kcal</small></div><div class="s" style="color:var(--mute)">${f.serving || '1 serving'} × ${k} · P ${r(f.protein)} · C ${r(f.carbs)} · F ${r(f.fat)}</div>
+          ${f.source === 'builtin' || f.source === 'ai' ? h`<div class="s" style="color:var(--mute);font-size:12px;margin-top:6px">Typical values — adjust the portion to fit what you ate.</div>` : ''}</div>
           <div class="seg">${[0.5, 1, 1.5, 2].map((m) => h`<button data-act="mult" data-k="${m}" class="${k === m ? 'on' : ''}">${m}×</button>`)}</div>${mealSeg()}
-          <button class="btn" data-act="saveFood">Add to ${st.meal}${S.day === 'yesterday' ? ' (yesterday)' : ''}</button><button class="link" style="width:100%" data-act="back">Back</button>`);
+          <button class="btn" data-act="saveFood">Add to ${st.meal}${S.day === 'yesterday' ? ' (yesterday)' : ''}</button>
+          ${f.source !== 'saved' ? h`<button class="btn secondary" style="margin-top:10px" data-act="starFood">☆ Save to my foods</button>` : ''}
+          <button class="link" style="width:100%" data-act="back">Back</button>`);
       }
-      render(body, h`<h3>Add food</h3><div class="seg">${[['search', 'Search'], ['scan', 'Scan'], ['type', 'Type']].map(([k, l]) => h`<button data-act="mode" data-m="${k}" class="${st.mode === k ? 'on' : ''}">${l}</button>`)}</div>${mealSeg()}
-        ${st.mode === 'search' ? h`<input class="search" id="fq" placeholder="Try “dosa”, “banana” or “pasta”" autocomplete="off"><div class="list scroll-list" id="res" style="margin-top:12px"></div>` : ''}
+      render(body, h`<h3>Add food</h3><div class="seg">${[['search', 'Search'], ['describe', 'Describe'], ['scan', 'Scan'], ['type', 'Type']].map(([k, l]) => h`<button data-act="mode" data-m="${k}" class="${st.mode === k ? 'on' : ''}">${l}</button>`)}</div>${mealSeg()}
+        ${st.mode === 'search' ? h`<input class="search" id="fq" placeholder="Try “dosa”, “chapati”, “paneer” or “pasta”" autocomplete="off"><div class="scroll-list" id="res" style="margin-top:12px"></div>` : ''}
+        ${st.mode === 'describe' ? h`<div class="field"><label style="display:block;padding:12px 16px"><textarea id="dt" rows="3" maxlength="500" placeholder="Describe your meal in your own words, e.g. “2 rotis, dal tadka and a small bowl of rice”" style="width:100%;border:0;background:none;outline:none;resize:none">${st.descText}</textarea></label></div>
+          <button class="btn" data-act="estimate">Estimate calories</button><div id="est" style="margin-top:14px"></div>` : ''}
         ${st.mode === 'scan' ? h`<div class="scanbox"><video id="vid" playsinline muted></video></div><p class="foot" id="scanmsg" style="margin:0 0 10px">Point the camera at a barcode.</p>
           <div class="field"><label><span>Barcode</span><input id="bc" inputmode="numeric" placeholder="Or type the number"></label></div><button class="btn secondary" data-act="lookup">Look up</button>` : ''}
         ${st.mode === 'type' ? h`<div class="field"><label><span>Food</span><input id="n" placeholder="e.g. Homemade khichdi"></label><label><span>Calories</span><input id="k" inputmode="decimal" placeholder="kcal"></label>
-          <label><span>Protein (g)</span><input id="p" inputmode="decimal" placeholder="optional"></label><label><span>Carbs (g)</span><input id="c" inputmode="decimal" placeholder="optional"></label><label><span>Fat (g)</span><input id="f" inputmode="decimal" placeholder="optional"></label></div>
+          <label><span>Protein (g)</span><input id="p" inputmode="decimal" placeholder="optional"></label><label><span>Carbs (g)</span><input id="c" inputmode="decimal" placeholder="optional"></label><label><span>Fat (g)</span><input id="f" inputmode="decimal" placeholder="optional"></label>
+          <label><span>Save to my foods</span><input type="checkbox" id="sv" class="switch" style="flex:none"></label>
+          <label><span>Let friends find it</span><input type="checkbox" id="sh" class="switch" style="flex:none"></label></div>
           <button class="btn" data-act="saveTyped">Add</button>` : ''}`);
-      if (st.mode === 'search') { runSearch(''); $('#fq', body).focus(); }
+      if (st.mode === 'search') { showShelves(); $('#fq', body).focus(); }
       if (st.mode === 'scan') startScan();
     };
+    // Empty search box: quick-add shelves (recent, frequent, saved, from your coach), then popular picks from their cuisines.
+    const section = (title, list) => (list.length ? h`<div class="caption" style="margin:14px 4px 6px">${title}</div><div class="list">${list.map((f) => { const i = st.results.push(f) - 1; return foodRow(f, i); })}</div>` : '');
+    async function showShelves() {
+      const my = ++seq; st.results = [];
+      try {
+        const [shelf, popular] = await Promise.all([st.shelves ? Promise.resolve(st.shelves) : GET('/api/foods/mine'), GET('/api/foods/search?q=')]);
+        if (my !== seq) return;
+        st.shelves = shelf; st.results = [];
+        render($('#res', body), h`${section('Recent', shelf.recent)}${section('Eat often', shelf.frequent)}${section('My foods', shelf.saved)}${section('From your coach', shelf.coach)}${section('Popular in your cuisines', popular)}`);
+      } catch (e) { toast(e.message); }
+    }
     let seq = 0, deb;
     const runSearch = async (q) => {
       const my = ++seq;
@@ -141,10 +163,13 @@ export function memberApp(root, initial, { signOut, reload }) {
         const res = await GET(`/api/foods/search?q=${encodeURIComponent(q)}`);
         if (my !== seq) return;
         st.results = res;
-        render($('#res', body), res.length ? h`${res.map((f, i) => h`<button class="row" data-act="pick" data-i="${i}"><div class="grow"><div class="t">${f.name}</div><div class="s">${f.serving || ''}${f.cuisine ? ` · ${f.cuisine}` : f.source === 'openfoodfacts' ? ' · Packaged' : ''}</div></div><span class="v">${fmtN(f.kcal)}</span></button>`)}` : h`<div class="empty">No matches. Try Type to add it yourself.</div>`);
+        render($('#res', body), res.length ? h`<div class="list">${res.map(foodRow)}</div>` : h`<div class="empty">No matches. Try <b>Describe</b> to have it estimated, or <b>Type</b> to add it yourself.</div>`);
       } catch (e) { toast(e.message); }
     };
-    body.addEventListener('input', (e) => { if (e.target.id === 'fq') { clearTimeout(deb); deb = setTimeout(() => runSearch(e.target.value.trim()), 250); } });
+    body.addEventListener('input', (e) => {
+      if (e.target.id === 'fq') { clearTimeout(deb); const q = e.target.value.trim(); deb = setTimeout(() => (q ? runSearch(q) : showShelves()), 250); }
+      if (e.target.id === 'dt') st.descText = e.target.value;
+    });
     const lookup = async (code) => {
       try { st.picked = await GET(`/api/foods/barcode/${code}`); st.mult = 1; draw(); } catch (e) { const m = $('#scanmsg', body); if (m) m.textContent = e.message; }
     };
@@ -158,17 +183,45 @@ export function memberApp(root, initial, { signOut, reload }) {
         st.timer = setInterval(async () => { try { const f = await det.detect(v); if (f[0]) { clearInterval(st.timer); lookup(f[0].rawValue); } } catch { /* frame not ready */ } }, 350);
       } catch { msg.textContent = 'Camera access was denied — type the barcode number instead.'; $('.scanbox', body).hidden = true; }
     }
+    const post = (f, mult = 1) => POST('/api/meals', { date: dateOf(), meal_type: st.meal, name: f.name, kcal: Math.round(f.kcal * mult), protein: Math.round((f.protein || 0) * mult * 10) / 10, carbs: Math.round((f.carbs || 0) * mult * 10) / 10, fat: Math.round((f.fat || 0) * mult * 10) / 10, source: f.source === 'openfoodfacts' ? 'scan' : f.source || 'typed' });
     const save = (f, mult = 1) => act(async () => {
-      const r = (n) => Math.round((n || 0) * mult * 10) / 10;
-      const res = await POST('/api/meals', { date: dateOf(), meal_type: st.meal, name: f.name, kcal: Math.round(f.kcal * mult), protein: r(f.protein), carbs: r(f.carbs), fat: r(f.fat), source: f.source === 'openfoodfacts' ? 'scan' : f.source || 'typed' });
+      const res = await post(f, mult);
       closeSheet(); await load(); toast(res.late ? 'Added · +2 pts (yesterday)' : 'Added · +5 pts');
     });
+    // The estimate list: every line is editable before it is logged.
+    const drawEst = () => {
+      const box = $('#est', body); if (!box) return;
+      if (!st.est) return render(box, h``);
+      const total = st.est.items.reduce((a, x) => a + (x.kcal || 0), 0);
+      render(box, st.est.items.length ? h`<div class="list">${st.est.items.map((x, i) => h`<div class="row"><div class="grow"><div class="t">${x.name} <span class="pill ${x.confidence === 'high' ? 'good' : x.confidence === 'low' ? 'warn' : ''}">${x.confidence}</span></div><div class="s">${x.serving} · P ${fmtN(x.protein)} · C ${fmtN(x.carbs)} · F ${fmtN(x.fat)}</div></div>
+          <input data-i="${i}" class="estk" inputmode="numeric" value="${x.kcal}" aria-label="Calories for ${x.name}" style="width:64px;text-align:right;border:0;border-radius:8px;background:var(--fill);padding:6px 8px;color:var(--blue)"><button class="link" aria-label="Remove" data-act="rmest" data-i="${i}">✕</button></div>`)}</div>
+        ${st.est.note ? h`<p class="foot">${st.est.note}</p>` : ''}<p class="foot">Estimates, not measurements — edit any number before adding.</p>
+        <button class="btn" data-act="addest" style="margin-top:12px">Add ${st.est.items.length} item${st.est.items.length > 1 ? 's' : ''} · ${fmtN(total)} kcal</button>` : h`<div class="empty">${st.est.note || 'Nothing to estimate. Try listing the foods you ate.'}</div>`);
+    };
+    el.addEventListener('input', (e) => {
+      if (e.target.classList.contains('estk')) { st.est.items[+e.target.dataset.i].kcal = Number(e.target.value) || 0; const b = $('[data-act=addest]', body); if (b) b.textContent = `Add ${st.est.items.length} item${st.est.items.length > 1 ? 's' : ''} · ${fmtN(st.est.items.reduce((a, x) => a + x.kcal, 0))} kcal`; }
+    });
     bind(el, {
-      mode: (b) => { st.mode = b.dataset.m; draw(); }, meal: (b) => { st.meal = b.dataset.m; draw(); },
+      mode: (b) => { st.mode = b.dataset.m; st.est = null; draw(); }, meal: (b) => { st.meal = b.dataset.m; draw(); },
       pick: (b) => { st.picked = st.results[+b.dataset.i]; st.mult = 1; draw(); }, mult: (b) => { st.mult = +b.dataset.k; draw(); },
       back: () => { st.picked = null; draw(); }, saveFood: () => save(st.picked, st.mult),
+      starFood: () => act(async () => { const f = st.picked, k = st.mult; await POST('/api/foods/saved', { name: f.name, kcal: Math.round(f.kcal * k), protein: f.protein * k, carbs: f.carbs * k, fat: f.fat * k, serving: k === 1 ? f.serving : `${f.serving || '1 serving'} × ${k}` }); st.shelves = null; toast('Saved to My foods'); }),
       lookup: () => lookup($('#bc', body).value.trim()),
-      saveTyped: () => save({ name: $('#n', body).value, kcal: Number($('#k', body).value), protein: Number($('#p', body).value), carbs: Number($('#c', body).value), fat: Number($('#f', body).value), source: 'typed' })
+      estimate: (b) => act(async () => {
+        const text = $('#dt', body).value.trim(); st.descText = text;
+        b.disabled = true; b.textContent = 'Estimating…';
+        try { st.est = await POST('/api/foods/describe', { text }); drawEst(); } finally { b.disabled = false; b.textContent = 'Estimate calories'; }
+      }),
+      rmest: (b) => { st.est.items.splice(+b.dataset.i, 1); drawEst(); },
+      addest: () => act(async () => {
+        for (const x of st.est.items) await post(x);
+        closeSheet(); await load(); toast(`Added ${st.est.items.length} items`);
+      }),
+      saveTyped: () => act(async () => {
+        const f = { name: $('#n', body).value, kcal: Number($('#k', body).value), protein: Number($('#p', body).value), carbs: Number($('#c', body).value), fat: Number($('#f', body).value), source: 'typed' };
+        if (($('#sv', body).checked || $('#sh', body).checked) && f.name.trim()) await POST('/api/foods/saved', { ...f, shared: $('#sh', body).checked });
+        await save(f);
+      })
     });
     draw();
   }

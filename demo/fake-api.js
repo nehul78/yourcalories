@@ -1,7 +1,7 @@
 // In-browser stand-in for the server, so the real front end can run as a static demo with sample data.
 // Mirrors the rules in server/ (today/yesterday logging, points, check-in, digests) in simplified form.
 import { setToken } from '../public/js/api.js';
-import { searchFoods, suggestCuisines, NATIONALITIES, CUISINES } from '../server/foods.js';
+import { searchFoods, suggestedFoods, suggestCuisines, NATIONALITIES, CUISINES } from '../server/foods.js';
 
 const PARAMS = {
   weight: { label: 'Weight', unit: 'kg' }, waist: { label: 'Waist', unit: 'cm' }, chest: { label: 'Chest', unit: 'cm' },
@@ -17,7 +17,7 @@ const loggable = (d) => d === TODAY() || d === addDays(TODAY(), -1);
 const num = (v) => (v === '' || v == null || !Number.isFinite(Number(v)) ? null : Number(v));
 
 export const demo = { current: null };
-const db = { users: {}, meals: [], workouts: [], measurements: [], photos: [], reports: [], notes: [], links: {}, goals: {}, cuisines: {}, id: 1000 };
+const db = { saved: [], users: {}, meals: [], workouts: [], measurements: [], photos: [], reports: [], notes: [], links: {}, goals: {}, cuisines: {}, id: 1000 };
 const nid = () => ++db.id;
 
 /* ---------- sample photo (drawn, no real people) ---------- */
@@ -153,6 +153,7 @@ const E = (status, error) => [status, { error }];
 function route(method, path, q, body = {}) {
   const u = db.users[demo.current], T = TODAY();
   const m = (re) => path.match(re);
+  let r;
   if (path === '/api/meta') return [200, { nationalities: NATIONALITIES, cuisines: CUISINES, params: PARAMS, vapid: '', cycle_days: CYCLE }];
   if (path === '/api/signup') {
     const id = nid(); db.users[id] = { id, role: body.role, name: body.name, email: body.email, onboarded: body.role === 'trainer', invite_code: body.role === 'trainer' ? Math.random().toString(36).slice(2, 8).toUpperCase() : null, notify_time: '20:00', activity: 'light' };
@@ -194,8 +195,43 @@ function route(method, path, q, body = {}) {
     return [200, { ok: true, report_id: tryReport(u.id) }];
   }
   if (path === '/api/measurements') return [200, db.measurements.filter((x) => x.member_id === u.id).sort((a, b) => a.date.localeCompare(b.date))];
-  if (path === '/api/foods/search') return [200, searchFoods(q.get('q') || '', (db.cuisines[u.id] || []).map(([cuisine, freq]) => ({ cuisine, freq })))];
-  let r;
+  const cu = () => (db.cuisines[u.id] || []).map(([cuisine, freq]) => ({ cuisine, freq }));
+  const row = (f, source) => ({ id: f.id, name: f.name, kcal: f.kcal, protein: f.protein, carbs: f.carbs, fat: f.fat, serving: f.serving || '1 serving', source });
+  if (path === '/api/foods/search') {
+    const term = (q.get('q') || '').trim().toLowerCase();
+    if (!term) return [200, suggestedFoods(cu())];
+    const mine = db.saved.filter((f) => f.user_id === u.id && term.split(/\s+/).every((t) => f.name.toLowerCase().includes(t))).map((f) => row(f, u.role === 'trainer' ? 'coach' : 'saved'));
+    const coach = db.saved.filter((f) => f.scope === 'coach' && db.links[u.id]?.trainer_id === f.user_id && term.split(/\s+/).every((t) => f.name.toLowerCase().includes(t))).map((f) => row(f, 'coach'));
+    return [200, [...mine, ...coach, ...searchFoods(term, cu())]];
+  }
+  if (path === '/api/foods/mine') {
+    const mine = db.meals.filter((x) => x.member_id === u.id).sort((a, b) => b.id - a.id), seen = new Set(), recent = [], count = {};
+    for (const x of mine) { const k = x.name.toLowerCase(); count[k] = (count[k] || 0) + 1; if (!seen.has(k) && recent.length < 8) { seen.add(k); recent.push(x); } }
+    const tag = (a) => a.map((f) => ({ name: f.name, kcal: f.kcal, protein: f.protein, carbs: f.carbs, fat: f.fat, serving: f.serving || '1 serving', source: 'typed' }));
+    const freq = [...new Map(mine.map((x) => [x.name.toLowerCase(), x])).values()].filter((x) => count[x.name.toLowerCase()] >= 2).sort((a, b) => count[b.name.toLowerCase()] - count[a.name.toLowerCase()]).slice(0, 8);
+    const tid = db.links[u.id]?.trainer_id;
+    return [200, { recent: tag(recent), frequent: tag(freq), saved: db.saved.filter((f) => f.user_id === u.id && f.scope === 'member').map((f) => row(f, 'saved')), coach: db.saved.filter((f) => f.scope === 'coach' && f.user_id === tid).map((f) => row(f, 'coach')) }];
+  }
+  if (path === '/api/foods/saved' && method === 'GET') return [200, db.saved.filter((f) => f.user_id === u.id).map((f) => row(f, u.role === 'trainer' ? 'coach' : 'saved'))];
+  if (path === '/api/foods/saved' && method === 'POST') {
+    if (!body.name?.trim() || !(num(body.kcal) >= 0)) return E(400, 'Add a name and calories (0–5000).');
+    const f = { id: nid(), user_id: u.id, scope: u.role === 'trainer' ? 'coach' : 'member', name: body.name.trim(), kcal: num(body.kcal), protein: num(body.protein) || 0, carbs: num(body.carbs) || 0, fat: num(body.fat) || 0, serving: body.serving || null };
+    db.saved.unshift(f); return [200, { id: f.id }];
+  }
+  if ((r = m(/^\/api\/foods\/saved\/(\d+)$/))) { db.saved = db.saved.filter((f) => !(f.id === +r[1] && f.user_id === u.id)); return [200, { ok: true }]; }
+  if (path === '/api/foods/describe') {
+    // Offline stand-in for the Claude estimate: matches each part of the sentence against the built-in dishes.
+    const parts = String(body.text || '').toLowerCase().split(/,|\band\b|\bwith\b|\+/).map((x) => x.trim()).filter(Boolean);
+    if (!parts.length || String(body.text).trim().length < 3) return E(400, 'Describe what you ate, for example “2 rotis, dal and a small bowl of rice”.');
+    const items = parts.map((part) => {
+      const qty = Number(part.match(/^(\d+(?:\.\d+)?)\s/)?.[1]) || (/\b(small|half)\b/.test(part) ? 0.6 : 1);
+      const words = part.replace(/^\d+(\.\d+)?\s*/, '').replace(/\b(a|an|the|small|large|big|bowl|of|plate|cup|glass|piece|pieces)\b/g, '').trim();
+      const hit = searchFoods(words.replace(/s$/, ''), cu(), 1)[0] || searchFoods(words.split(' ')[0] || words, cu(), 1)[0];
+      const k = Math.round((hit ? hit.kcal : 220) * qty), r1 = (n) => Math.round((n || 0) * qty * 10) / 10;
+      return { name: hit ? hit.name : part, serving: hit ? `${qty} × ${hit.serving}` : 'assumed 1 portion', kcal: k, protein: r1(hit?.protein ?? 8), carbs: r1(hit?.carbs ?? 28), fat: r1(hit?.fat ?? 9), confidence: hit ? 'medium' : 'low', source: 'ai' };
+    });
+    return [200, { items, note: 'Demo estimate from sample data. The real app asks Claude, which also handles mixed dishes and unusual foods.' }];
+  }
   if ((r = m(/^\/api\/foods\/barcode\/(.+)$/))) return /^\d{6,14}$/.test(r[1]) ? [200, { name: 'Nature Valley · Oats & honey bar', kcal: 190, protein: 4, carbs: 29, fat: 7, serving: '2 bars', source: 'openfoodfacts' }] : E(400, 'That does not look like a barcode.');
   if (path === '/api/day') { const date = q.get('date') || T; return [200, { ...day(u.id, date), editable: loggable(date) }]; }
   if (path === '/api/meals' && method === 'POST') {

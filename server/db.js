@@ -137,6 +137,17 @@ CREATE TABLE IF NOT EXISTS notifications (
   read INTEGER DEFAULT 0,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS custom_foods (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  scope TEXT NOT NULL DEFAULT 'member' CHECK (scope IN ('member','coach')),  -- 'coach': library shown to that coach's clients
+  name TEXT NOT NULL,
+  kcal REAL NOT NULL, protein REAL DEFAULT 0, carbs REAL DEFAULT 0, fat REAL DEFAULT 0,
+  serving TEXT,
+  shared INTEGER DEFAULT 0,  -- 1: searchable by everyone as a community food
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS custom_foods_user ON custom_foods (user_id);
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL

@@ -4,7 +4,7 @@ import { h, raw, render, bind, mount, $, $$, toast, sheet, closeSheet, fmtN, fmt
 const STATUS = { 'on-track': 'On track', 'off-track': 'Off target', quiet: 'Not logged', logged: 'Logged' };
 
 export function trainerApp(root, initial, { signOut }) {
-  const S = { me: initial, tab: 'clients', detail: null, clients: [], notes: [], unread: 0 };
+  const S = { me: initial, tab: 'clients', detail: null, clients: [], notes: [], unread: 0, foods: [] };
   const view = mount(root);
   const act = async (fn, ok) => { try { await fn(); if (ok) toast(ok); } catch (e) { toast(e.message); } };
 
@@ -12,6 +12,7 @@ export function trainerApp(root, initial, { signOut }) {
     S.me = await GET('/api/me');
     if (S.detail) S.d = await GET(`/api/trainer/members/${S.detail}`);
     else if (S.tab === 'clients') S.clients = await GET('/api/trainer/members');
+    else if (S.tab === 'me') S.foods = await GET('/api/foods/saved');
     S.notes = await GET('/api/notifications');
     S.unread = S.notes.filter((n) => !n.read).length;
     draw();
@@ -65,6 +66,10 @@ export function trainerApp(root, initial, { signOut }) {
     <div class="list"><label class="row"><span class="grow">Send me the digest at</span><input type="time" id="nt" value="${S.me.user.notify_time}" style="border:0;background:var(--fill);border-radius:8px;padding:6px 10px;color:var(--blue)"></label>
       <label class="row"><span class="grow">Push notifications<div class="s">Phone alerts for digests & reports</div></span><input type="checkbox" class="switch" id="push" ${S.me.user.push ? 'checked' : ''}></label></div>
     <p class="foot">One summary a day, at the time you choose, so your clients' activity never interrupts your day. A morning time covers yesterday; afternoon or evening covers today.</p>
+    <div class="caption">Food library for your clients</div>
+    <div class="list">${S.foods.map((f) => h`<div class="row"><div class="grow"><div class="t">${f.name}</div><div class="s">${f.serving} · P ${fmtN(f.protein)} · C ${fmtN(f.carbs)} · F ${fmtN(f.fat)}</div></div><span class="v">${fmtN(f.kcal)}</span><button class="link" aria-label="Remove ${f.name}" data-act="delfood" data-id="${f.id}">✕</button></div>`)}
+      <button class="row chev" data-act="addfood"><span class="grow t" style="color:var(--blue)">Add a food</span></button></div>
+    <p class="foot">Foods you add here show up in your clients' search with a Coach badge, so everyone logs your meal-plan dishes the same way.</p>
     <div class="caption">Role</div><div class="list"><div class="row"><span class="grow">You're signed in as</span><span class="pill coach">Coach</span></div></div>
     <div class="caption">Your code</div>${invite()}
     <div style="height:18px"></div><button class="btn danger" data-act="out">Sign out</button>`;
@@ -106,6 +111,14 @@ export function trainerApp(root, initial, { signOut }) {
       const text = `Join me on YourCalories — my coach code is ${S.me.user.invite_code}. ${location.origin}`;
       if (navigator.share) { try { await navigator.share({ text }); } catch { /* cancelled */ } } else { await navigator.clipboard?.writeText(text); toast('Invite copied'); }
     },
+    addfood: () => {
+      const el = sheet(h`<h3>Add a food</h3><div class="field">${[['name', 'Name', 'text', 'e.g. Protein pancakes'], ['serving', 'Serving', 'text', 'e.g. 2 pancakes'], ['kcal', 'Calories', 'decimal', 'kcal'], ['protein', 'Protein (g)', 'decimal', ''], ['carbs', 'Carbs (g)', 'decimal', ''], ['fat', 'Fat (g)', 'decimal', '']].map(([k, l, m, ph]) => h`<label><span>${l}</span><input data-k="${k}" ${m === 'text' ? '' : h`inputmode="${m}"`} placeholder="${ph}"></label>`)}</div><button class="btn" data-act="save">Add to library</button>`);
+      bind(el, { save: () => act(async () => {
+        await POST('/api/foods/saved', Object.fromEntries($$('[data-k]', el).map((i) => [i.dataset.k, i.value])));
+        closeSheet(); await load();
+      }, 'Added to your library') });
+    },
+    delfood: (b) => act(async () => { await DEL(`/api/foods/saved/${b.dataset.id}`); await load(); }),
     out: signOut
   });
 

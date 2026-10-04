@@ -10,14 +10,16 @@
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning server/index.js",
     "dev": "node --watch --disable-warning=ExperimentalWarning server/index.js",
-    "test": "node --disable-warning=ExperimentalWarning --test test/api.test.js",
+    "test": "node --disable-warning=ExperimentalWarning --test test/api.test.js test/foods.test.js",
     "demo": "node demo/build.mjs demo/dist/index.html"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.131.0",
     "@libsql/client": "^0.15.15",
     "express": "^5.1.0",
     "pdfkit": "^0.17.1",
-    "web-push": "^3.6.7"
+    "web-push": "^3.6.7",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "esbuild": "^0.28.2"

@@ -3,7 +3,9 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { all, get, run } from './db.js';
 import * as L from './logic.js';
-import { NATIONALITIES, CUISINES, suggestCuisines, searchFoods } from './foods.js';
+import { NATIONALITIES, CUISINES, suggestCuisines, searchFoods, suggestedFoods } from './foods.js';
+import { searchUsda } from './usda.js';
+import { describeMeal, describeEnabled, checkQuota } from './describe.js';
 import { publicKey } from './push.js';
 import { tryGenerateReport } from './report.js';
 
@@ -193,18 +195,85 @@ export function createApp() {
     res.json(await all('SELECT * FROM measurements WHERE member_id = ? ORDER BY date', req.user.id))));
 
   /* ---------- food & logging ---------- */
+  const foodRow = (f, source) => ({ id: f.id, name: f.name, kcal: f.kcal, protein: f.protein, carbs: f.carbs, fat: f.fat, serving: f.serving || '1 serving', source });
+  const likeAll = (q) => q.toLowerCase().split(/\s+/).filter(Boolean).slice(0, 4);
   app.get('/api/foods/search', auth, wrap(async (req, res) => {
     const q = String(req.query.q || '').trim();
     const cuisines = await all('SELECT cuisine, freq FROM cuisines WHERE user_id = ?', req.user.id);
-    const local = searchFoods(q, cuisines);
-    let online = [];
-    if (q.length >= 3 && req.query.online !== '0') {
+    if (!q) return res.json(suggestedFoods(cuisines));
+    // 1. foods this person saved, their coach's library, then the built-in dishes
+    const terms = likeAll(q), cond = terms.map(() => 'LOWER(name) LIKE ?').join(' AND '), args = terms.map((t) => `%${t}%`);
+    const link = await get('SELECT trainer_id FROM links WHERE member_id = ?', req.user.id);
+    const mine = await all(`SELECT * FROM custom_foods WHERE user_id = ? AND scope = 'member' AND ${cond} ORDER BY id DESC LIMIT 5`, req.user.id, ...args);
+    const coach = link ? await all(`SELECT * FROM custom_foods WHERE user_id = ? AND scope = 'coach' AND ${cond} ORDER BY id DESC LIMIT 5`, link.trainer_id, ...args) : [];
+    const community = await all(`SELECT * FROM custom_foods WHERE shared = 1 AND scope = 'member' AND user_id != ? AND ${cond} ORDER BY id DESC LIMIT 4`, req.user.id, ...args);
+    const builtin = searchFoods(q, cuisines);
+    // 2. generic ingredients (USDA) and packaged products (Open Food Facts), in parallel; both optional
+    let off = [];
+    const offTask = q.length >= 3 && req.query.online !== '0' ? (async () => {
       try {
         const r = await fetch(`https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(q)}&search_simple=1&action=process&json=1&page_size=8&fields=product_name,brands,nutriments,serving_size,code`, { signal: AbortSignal.timeout(4000) });
-        online = (await r.json()).products.map(offToFood).filter(Boolean);
+        off = (await r.json()).products.map(offToFood).filter(Boolean);
       } catch { /* offline is fine: built-in results still work */ }
+    })() : null;
+    const [usda] = await Promise.all([req.query.online === '0' ? [] : searchUsda(q), offTask]);
+    res.json([...mine.map((f) => foodRow(f, 'saved')), ...coach.map((f) => foodRow(f, 'coach')), ...builtin, ...usda, ...off, ...community.map((f) => foodRow(f, 'community'))]);
+  }));
+
+  /* saved foods: a member's own list, or a coach's library shown to all their clients */
+  const cleanFood = (b) => {
+    const kcal = num(b.kcal);
+    if (!b.name?.trim() || kcal == null || kcal < 0 || kcal > 5000) return null;
+    return { name: b.name.trim().slice(0, 120), kcal, protein: num(b.protein) ?? 0, carbs: num(b.carbs) ?? 0, fat: num(b.fat) ?? 0, serving: String(b.serving || '').trim().slice(0, 60) || null };
+  };
+  app.get('/api/foods/saved', auth, wrap(async (req, res) => {
+    const rows = await all('SELECT * FROM custom_foods WHERE user_id = ? ORDER BY id DESC', req.user.id);
+    res.json(rows.map((f) => ({ ...foodRow(f, req.user.role === 'trainer' ? 'coach' : 'saved'), shared: !!f.shared })));
+  }));
+  app.post('/api/foods/saved', auth, wrap(async (req, res) => {
+    const f = cleanFood(req.body || {});
+    if (!f) return fail(res, 400, 'Add a name and calories (0–5000).');
+    const count = (await get('SELECT COUNT(*) AS n FROM custom_foods WHERE user_id = ?', req.user.id)).n;
+    if (count >= 300) return fail(res, 400, 'You have reached the limit of 300 saved foods.');
+    const dup = await get('SELECT id FROM custom_foods WHERE user_id = ? AND LOWER(name) = ?', req.user.id, f.name.toLowerCase());
+    const scope = req.user.role === 'trainer' ? 'coach' : 'member', shared = scope === 'member' && req.body.shared ? 1 : 0;
+    if (dup) {
+      await run('UPDATE custom_foods SET kcal=?, protein=?, carbs=?, fat=?, serving=?, shared=? WHERE id = ?', f.kcal, f.protein, f.carbs, f.fat, f.serving, shared, dup.id);
+      return res.json({ id: dup.id, updated: true });
     }
-    res.json([...local, ...online]);
+    const info = await run('INSERT INTO custom_foods (user_id,scope,name,kcal,protein,carbs,fat,serving,shared) VALUES (?,?,?,?,?,?,?,?,?)', req.user.id, scope, f.name, f.kcal, f.protein, f.carbs, f.fat, f.serving, shared);
+    res.json({ id: Number(info.lastInsertRowid) });
+  }));
+  app.delete('/api/foods/saved/:id', auth, wrap(async (req, res) => {
+    await run('DELETE FROM custom_foods WHERE id = ? AND user_id = ?', req.params.id, req.user.id);
+    res.json({ ok: true });
+  }));
+  // The "quick add" shelf: what this person logged recently and most often, plus saved and coach foods.
+  app.get('/api/foods/mine', auth, only('member'), wrap(async (req, res) => {
+    const pick = 'SELECT name, kcal, protein, carbs, fat FROM meals WHERE member_id = ?';
+    const recent = await all(`${pick} AND id IN (SELECT MAX(id) FROM meals WHERE member_id = ? GROUP BY LOWER(name)) ORDER BY id DESC LIMIT 8`, req.user.id, req.user.id);
+    const frequent = await all(`SELECT name, kcal, protein, carbs, fat, COUNT(*) AS n FROM meals WHERE member_id = ? GROUP BY LOWER(name) HAVING n >= 2 ORDER BY n DESC, MAX(id) DESC LIMIT 8`, req.user.id);
+    const saved = await all("SELECT * FROM custom_foods WHERE user_id = ? AND scope = 'member' ORDER BY id DESC LIMIT 30", req.user.id);
+    const link = await get('SELECT trainer_id FROM links WHERE member_id = ?', req.user.id);
+    const coach = link ? await all("SELECT * FROM custom_foods WHERE user_id = ? AND scope = 'coach' ORDER BY id DESC LIMIT 30", link.trainer_id) : [];
+    const tag = (rows, source) => rows.map((f) => ({ ...foodRow(f, source), serving: f.serving || '1 serving' }));
+    res.json({ recent: tag(recent, 'typed'), frequent: tag(frequent, 'typed'), saved: tag(saved, 'saved'), coach: tag(coach, 'coach') });
+  }));
+
+  // Plain-language meal -> itemised estimate (Claude). Members only; a daily cap keeps costs predictable.
+  app.post('/api/foods/describe', auth, only('member'), wrap(async (req, res) => {
+    if (!describeEnabled()) return fail(res, 503, 'Meal descriptions are switched off on this server. Search or type your food instead.');
+    const text = String(req.body?.text || '').trim().slice(0, 500);
+    if (text.length < 3) return fail(res, 400, 'Describe what you ate, for example “2 rotis, dal and a small bowl of rice”.');
+    if (!checkQuota(req.user.id)) return fail(res, 429, 'You have used today’s meal descriptions. Search or type your food instead, or try again tomorrow.');
+    const cuisines = await all('SELECT cuisine, freq FROM cuisines WHERE user_id = ?', req.user.id);
+    try {
+      res.json(await describeMeal(text, { cuisines, nationality: req.user.nationality }));
+    } catch (err) {
+      if (err.status === 422) return fail(res, 422, err.message);
+      console.error('describe failed', err.status || '', err.message);
+      fail(res, 502, 'The estimate service is unavailable right now. Search or type your food instead.');
+    }
   }));
   app.get('/api/foods/barcode/:code', auth, wrap(async (req, res) => {
     if (!/^\d{6,14}$/.test(req.params.code)) return fail(res, 400, 'That does not look like a barcode.');
@@ -245,7 +314,7 @@ export function createApp() {
     if (!b.name?.trim() || kcal == null || kcal < 0 || kcal > 5000) return fail(res, 400, 'Add a name and calories (0–5000).');
     const late = date === req.today ? 0 : 1;
     const info = await run('INSERT INTO meals (member_id,date,meal_type,name,kcal,protein,carbs,fat,source,late) VALUES (?,?,?,?,?,?,?,?,?,?)',
-      req.user.id, date, ['breakfast', 'lunch', 'dinner', 'snack'].includes(b.meal_type) ? b.meal_type : 'snack', b.name.trim().slice(0, 120), kcal, num(b.protein) ?? 0, num(b.carbs) ?? 0, num(b.fat) ?? 0, ['builtin', 'openfoodfacts', 'scan', 'typed'].includes(b.source) ? b.source : 'typed', late);
+      req.user.id, date, ['breakfast', 'lunch', 'dinner', 'snack'].includes(b.meal_type) ? b.meal_type : 'snack', b.name.trim().slice(0, 120), kcal, num(b.protein) ?? 0, num(b.carbs) ?? 0, num(b.fat) ?? 0, ['builtin', 'openfoodfacts', 'scan', 'typed', 'saved', 'coach', 'community', 'usda', 'ai'].includes(b.source) ? b.source : 'typed', late);
     res.json({ id: Number(info.lastInsertRowid), late: !!late, points: await L.computePoints(req.user.id, req.today) });
   }));
   app.delete('/api/meals/:id', auth, only('member'), wrap(async (req, res) => {
