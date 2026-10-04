@@ -4,15 +4,21 @@
   "description": "A calm, Apple-style calorie tracker for friends, with a coach layer: trainer-assigned goals, daily digests and monthly PDF health reports.",
   "type": "module",
   "private": true,
-  "engines": { "node": ">=22.13" },
+  "engines": {
+    "node": ">=22.13"
+  },
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning server/index.js",
     "dev": "node --watch --disable-warning=ExperimentalWarning server/index.js",
-    "test": "node --disable-warning=ExperimentalWarning --test test/api.test.js"
+    "test": "node --disable-warning=ExperimentalWarning --test test/api.test.js",
+    "demo": "node demo/build.mjs demo/dist/index.html"
   },
   "dependencies": {
     "express": "^5.1.0",
     "pdfkit": "^0.17.1",
     "web-push": "^3.6.7"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
   }
 }

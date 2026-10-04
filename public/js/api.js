@@ -1,6 +1,7 @@
 const KEY = 'yc.token';
-export const getToken = () => { try { return localStorage.getItem(KEY); } catch { return null; } };
-export const setToken = (t) => { try { t ? localStorage.setItem(KEY, t) : localStorage.removeItem(KEY); } catch { /* private mode */ } };
+let mem = null; // fallback when storage is blocked (private mode, embedded frames)
+export const getToken = () => { try { return localStorage.getItem(KEY) || mem; } catch { return mem; } };
+export const setToken = (t) => { mem = t || null; try { t ? localStorage.setItem(KEY, t) : localStorage.removeItem(KEY); } catch { /* private mode */ } };
 let onAuthLost = () => {};
 export const whenAuthLost = (fn) => { onAuthLost = fn; };
 

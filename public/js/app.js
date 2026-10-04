@@ -30,7 +30,7 @@ export async function signOut() {
 }
 
 /* ---------------- welcome / auth ---------------- */
-function welcome() {
+export function welcome() {
   let mode = 'up', role = 'member';
   const view = mount(root);
   const draw = () => render(view, h`<div class="screen plain">
