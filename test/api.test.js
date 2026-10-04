@@ -74,8 +74,8 @@ test('can only log today or yesterday; yesterday earns fewer points', async () =
   const w = await call('POST', '/api/workouts', s.m, { type: 'Run', minutes: 30, kcal_burned: 250 });
   assert.equal(w.status, 200);
   // locked: cannot delete an older meal
-  run('INSERT INTO meals (member_id,date,name,kcal) VALUES (?,?,?,?)', get('SELECT id FROM users WHERE email=?', 'maya@x.com').id, addDays(today, -3), 'old', 1);
-  const old = get("SELECT id FROM meals WHERE name='old'");
+  await run('INSERT INTO meals (member_id,date,name,kcal) VALUES (?,?,?,?)', (await get('SELECT id FROM users WHERE email=?', 'maya@x.com')).id, addDays(today, -3), 'old', 1);
+  const old = await get("SELECT id FROM meals WHERE name='old'");
   assert.equal((await call('DELETE', `/api/meals/${old.id}`, s.m)).status, 400);
   const me = await call('GET', '/api/me', s.m);
   assert.ok(me.body.points.total >= 5 + 2 + 10);
@@ -100,12 +100,12 @@ test('monthly report only after every mandatory parameter is in', async () => {
 
 test('photo mood: positive progress celebrates, otherwise motivates', async () => {
   // a month passes: backdate the earlier photo and weigh-in
-  run('UPDATE photos SET date = ?', addDays(today, -30));
-  run('UPDATE measurements SET date = ?', addDays(today, -30));
+  await run('UPDATE photos SET date = ?', addDays(today, -30));
+  await run('UPDATE measurements SET date = ?', addDays(today, -30));
   await call('POST', '/api/measurements', s.m, { weight: 68 });
   const up = await call('POST', '/api/photos', s.m, { image: tiny });
   assert.equal(up.body.mood, 'celebrate'); assert.equal(up.body.delta_kg, -2);
-  run('UPDATE photos SET date = ?', addDays(today, -30));
+  await run('UPDATE photos SET date = ?', addDays(today, -30));
   await call('POST', '/api/measurements', s.m, { weight: 71 });
   const down = await call('POST', '/api/photos', s.m, { image: tiny });
   assert.equal(down.body.mood, 'motivate');

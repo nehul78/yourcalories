@@ -1,20 +1,27 @@
-import { DatabaseSync } from 'node:sqlite';
+import { createClient } from '@libsql/client';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 
+// Where data lives: an online database (Turso) when TURSO_DATABASE_URL is set, so free hosts
+// without a disk keep everything; otherwise a local SQLite file in DATA_DIR.
 export const DATA_DIR = process.env.DATA_DIR || path.resolve('data');
-try {
-  mkdirSync(path.join(DATA_DIR, 'photos'), { recursive: true });
-  mkdirSync(path.join(DATA_DIR, 'reports'), { recursive: true });
-} catch (err) {
-  console.error(`Cannot write to the data folder "${DATA_DIR}" (${err.code}). Check that the disk is attached at that mount path, or set DATA_DIR to a writable folder.`);
-  throw err;
+const remoteUrl = process.env.TURSO_DATABASE_URL;
+if (!remoteUrl) {
+  try {
+    mkdirSync(DATA_DIR, { recursive: true });
+  } catch (err) {
+    console.error(`Cannot write to the data folder "${DATA_DIR}" (${err.code}). Set DATA_DIR to a writable folder, or set TURSO_DATABASE_URL to use an online database.`);
+    throw err;
+  }
 }
 
-export const db = new DatabaseSync(process.env.DB_FILE || path.join(DATA_DIR, 'app.db'));
-db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
+export const db = createClient({
+  url: remoteUrl || `file:${process.env.DB_FILE || path.join(DATA_DIR, 'app.db')}`,
+  authToken: process.env.TURSO_AUTH_TOKEN
+});
+if (!remoteUrl) await db.executeMultiple('PRAGMA journal_mode = WAL;');
 
-db.exec(`
+await db.executeMultiple(`PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY,
   role TEXT NOT NULL CHECK (role IN ('member','trainer')),
@@ -105,6 +112,7 @@ CREATE TABLE IF NOT EXISTS photos (
   member_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   date TEXT NOT NULL,
   file TEXT NOT NULL,
+  data BLOB,
   mood TEXT NOT NULL DEFAULT 'motivate',
   delta_kg REAL,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -116,6 +124,7 @@ CREATE TABLE IF NOT EXISTS reports (
   period_start TEXT NOT NULL,
   period_end TEXT NOT NULL,
   file TEXT NOT NULL,
+  data BLOB,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS notifications (
@@ -128,8 +137,21 @@ CREATE TABLE IF NOT EXISTS notifications (
   read INTEGER DEFAULT 0,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `);
 
-export const all = (sql, ...p) => db.prepare(sql).all(...p);
-export const get = (sql, ...p) => db.prepare(sql).get(...p);
-export const run = (sql, ...p) => db.prepare(sql).run(...p);
+const exec = (sql, p) => db.execute({ sql, args: p.map((v) => (v === undefined ? null : v)) });
+const plain = (row) => {
+  const o = {};
+  for (const [k, v] of Object.entries(row)) o[k] = v instanceof ArrayBuffer ? Buffer.from(v) : v;
+  return o;
+};
+export const all = async (sql, ...p) => (await exec(sql, p)).rows.map(plain);
+export const get = async (sql, ...p) => { const r = (await exec(sql, p)).rows[0]; return r ? plain(r) : undefined; };
+export const run = async (sql, ...p) => {
+  const r = await exec(sql, p);
+  return { changes: r.rowsAffected, lastInsertRowid: r.lastInsertRowid == null ? null : Number(r.lastInsertRowid) };
+};

@@ -12,7 +12,9 @@ npm start            # http://localhost:3000   (Node >= 22.13)
 npm test
 ```
 
-Env: `PORT`, `DATA_DIR` (SQLite db, photos, PDFs, VAPID keys; default `./data`), `CYCLE_DAYS` (default 30), `VAPID_SUBJECT`.
+Env: `PORT`, `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN` (online database; everything incl. photos, PDFs and push keys is stored there), `DATA_DIR` (local SQLite file used when no Turso URL is set; default `./data`), `CYCLE_DAYS` (default 30), `VAPID_SUBJECT`.
+
+Deploy: `render.yaml` runs on Render's free plan with a free Turso database, so data survives restarts.
 Web push and the camera/share APIs need HTTPS in production (localhost is exempt).
 
 ## What it does

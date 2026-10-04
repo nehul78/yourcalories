@@ -10,16 +10,16 @@ const toMin = (hhmm) => { const [h, m] = hhmm.split(':').map(Number); return h *
  * A morning digest (before noon) covers yesterday; an afternoon/evening digest covers today.
  */
 export async function sendDigests(now = Date.now()) {
-  for (const t of all("SELECT * FROM users WHERE role = 'trainer'")) {
+  for (const t of await all("SELECT * FROM users WHERE role = 'trainer'")) {
     const today = localDate(t.tz_offset, now);
     const mins = localMinutes(t.tz_offset, now);
     const at = toMin(t.notify_time || '20:00');
     if (t.last_digest_date === today || mins < at || mins - at > 180) continue;
-    run('UPDATE users SET last_digest_date = ? WHERE id = ?', today, t.id);
-    const members = all('SELECT u.* FROM links l JOIN users u ON u.id = l.member_id WHERE l.trainer_id = ? ORDER BY u.name', t.id);
+    await run('UPDATE users SET last_digest_date = ? WHERE id = ?', today, t.id);
+    const members = await all('SELECT u.* FROM links l JOIN users u ON u.id = l.member_id WHERE l.trainer_id = ? ORDER BY u.name', t.id);
     if (!members.length) continue;
     const date = at < 12 * 60 ? addDays(today, -1) : today;
-    const rows = members.map((m) => memberDigest(m, date));
+    const rows = await Promise.all(members.map((m) => memberDigest(m, date)));
     const quiet = rows.filter((r) => r.status === 'quiet').length;
     const ok = rows.filter((r) => r.status === 'on-track').length;
     await notify(t.id, {
@@ -32,7 +32,7 @@ export async function sendDigests(now = Date.now()) {
 }
 
 export async function sweepReports(now = Date.now()) {
-  for (const m of all('SELECT u.id, u.tz_offset FROM links l JOIN users u ON u.id = l.member_id')) {
+  for (const m of await all('SELECT u.id, u.tz_offset FROM links l JOIN users u ON u.id = l.member_id')) {
     await tryGenerateReport(m.id, localDate(m.tz_offset, now));
   }
 }
